@@ -11,6 +11,7 @@
 
 #include <cmath>
 #include <list>
+#include <bitset>
 
 #include "Core/SandboxVoxelCore.h"
 #include "serialization.hpp"
@@ -223,9 +224,10 @@ void ASandboxTerrainController::EndPlay(const EEndPlayReason::Type EndPlayReason
 		Save();
 	}
 
-	CloseFile();
 	SaveTerrainMetadata();
 
+	CloseFile();
+	
     TerrainData->Clean();
 	GetTerrainGenerator()->Clean();
 
@@ -483,12 +485,11 @@ void ASandboxTerrainController::ZoneSoftUnload(UTerrainZoneComponent* ZoneCompon
 // begin play
 //======================================================================================================================================================================
 
-bool LoadDataFromKvFile(TKvFile& KvFile, const TVoxelIndex& Index, std::function<void(TValueDataPtr)> Function);
-
 void ASandboxTerrainController::BeginPlayServer() {
 	if (!OpenFile()) {
 		// TODO error message
 		// return; // TODO fix UE4 create directory false positive issue
+		UE_LOG(LogVt, Error, TEXT("Error open terrain file!"));
 	}
 
 	if (LoadJson()) {
@@ -736,10 +737,6 @@ void ASandboxTerrainController::BatchSpawnZone(const TArray<TSpawnZoneParam>& Sp
 			continue; // skip network zones
 		}
 
-		if (Index.X == 0 && Index.Y == 0 && Index.Z == 1) {
-			UE_LOG(LogTemp, Log, TEXT("TEST1"));
-		}
-
 		bool bIsNoMesh = false;
 
 		//check voxel data in memory
@@ -749,14 +746,12 @@ void ASandboxTerrainController::BatchSpawnZone(const TArray<TSpawnZoneParam>& Sp
 		TVdInfoLockGuard Lock(VdInfoPtr); // TODO lock order
 
 		if (VdInfoPtr->DataState == TVoxelDataState::UNDEFINED) {
-			if (TdFile.isExist(Index)) {
-				TValueDataPtr DataPtr = TdFile.loadData(Index);
-				usbt::TFastUnsafeDeserializer Deserializer(DataPtr->data());
-				TKvFileZoneData ZoneHeader;
-				Deserializer >> ZoneHeader;
+			TFileItmKey Key{ Index, TFileItmType::MESH_DATA };
+			if (TdFile.isExist(Key)) {
+				std::bitset<sizeof(ulong64)> ZoneFlags(TdFile.k_flags(Key));
 
-				bIsNoMesh = ZoneHeader.Is(TZoneFlag::NoMesh);
-				bool bIsNoVd = ZoneHeader.Is(TZoneFlag::NoVoxelData);
+				bIsNoMesh = ZoneFlags.test((size_t)TZoneFlag::NoMesh);
+				bool bIsNoVd = ZoneFlags.test((size_t)TZoneFlag::NoVoxelData);
 				if (bIsNoVd) {
 					VdInfoPtr->DataState = TVoxelDataState::UNGENERATED;
 				} else {
@@ -764,7 +759,7 @@ void ASandboxTerrainController::BatchSpawnZone(const TArray<TSpawnZoneParam>& Sp
 					VdInfoPtr->DataState = TVoxelDataState::READY_TO_LOAD;
 				}
 
-				if (ZoneHeader.Is(TZoneFlag::InternalSolid)) {
+				if (ZoneFlags.test((size_t)TZoneFlag::InternalSolid)) {
 					VdInfoPtr->SetFlagInternalFullSolid();
 				}
 

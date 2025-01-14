@@ -38,9 +38,11 @@ class ASandboxTerrainNetProxy;
 class TThreadPool;
 class TConveyour;
 
+struct TFileItmKey;
+
 typedef TMap<uint64, TInstanceMeshArray> TInstanceMeshTypeMap;
 typedef std::shared_ptr<TMeshData> TMeshDataPtr;
-typedef kvdb::KvFile<TVoxelIndex, TValueData> TKvFile;
+typedef kvdb::KvFile<TFileItmKey, TValueData> TKvFile;
 
 
 USTRUCT()
@@ -214,7 +216,7 @@ typedef struct TChunkIndex {
 
 } TChunkIndex;
 
-enum class TZoneFlag : int {
+enum class TZoneFlag : uint32 {
 	Generated = 0, // Not used
 	NoMesh = 1,
 	NoVoxelData = 2,
@@ -222,23 +224,12 @@ enum class TZoneFlag : int {
 };
 
 typedef struct TKvFileZoneData {
-	uint32 Flags = 0x0;
 	uint32 LenMd = 0;
-
-	bool Is(TZoneFlag Flag) {
-		return (Flags >> (int)Flag) & 1U;
-	};
-
-	void SetFlag(int Flag) {
-		Flags |= 1UL << Flag;
-	};
-
+	uint32 CRC = 0; // unused
 } TKvFileZoneData;
 
 struct TZoneModificationData {
-
 	uint32 VStamp = 0;
-
 };
 
 struct TInstantMeshData {
@@ -254,6 +245,30 @@ struct TInstantMeshData {
 	float ScaleY;
 	float ScaleZ;
 };
+
+enum TFileItmType : uint32 {
+	MAP_INFO = 0,
+	VOXEL_DATA = 1,
+	MESH_DATA = 2,
+	OBJ_DATA = 3,
+	CHGCNT = 4
+};
+
+#pragma pack(push,1)
+struct TFileItmKey {
+	TVoxelIndex Index;
+	uint32 Type;
+};
+#pragma pack(pop)
+
+namespace std {
+	template <>
+	struct hash<TFileItmKey> {
+		std::size_t operator()(const TFileItmKey& Key) const {
+			return hash<short>()(Key.Index.X) ^ hash<short>()(Key.Index.Y) ^ hash<short>()(Key.Index.Z) ^ hash<short>()(Key.Type);
+		}
+	};
+}
 
 
 UCLASS()
@@ -585,10 +600,6 @@ private:
     TTerrainData* TerrainData;
 
 	mutable TKvFile TdFile;
-
-	mutable TKvFile ObjFile;
-
-	TKvFile VdFile;
 
 	std::shared_ptr<TVoxelDataInfo> GetVoxelDataInfo(const TVoxelIndex& Index);
 
