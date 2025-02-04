@@ -1,7 +1,6 @@
 #include "SandboxTerrainController.h"
 #include "Async/Async.h"
 #include "DrawDebugHelpers.h"
-#include "kvdb.hpp"
 
 #include "TerrainZoneComponent.h"
 #include "VoxelMeshComponent.h"
@@ -24,6 +23,8 @@
 #include "Core/memstat.h"
 
 #include "Runtime/Launch/Resources/Version.h"
+
+#include "UnrealSandboxData.h"
 
 
 // ====================================
@@ -133,8 +134,8 @@ void ASandboxTerrainController::BeginPlay() {
 	bGenerateOnlySmallSpawnPoint = false;
 #endif
 
-	UE_LOG(LogVt, Warning, TEXT("Initialize terrain parameters..."));
-	UE_LOG(LogVt, Warning, TEXT("LodRatio = %f"), LodRatio);
+	UE_LOG(LogVt, Log, TEXT("Initialize terrain parameters..."));
+	UE_LOG(LogVt, Log, TEXT("LodRatio = %f"), LodRatio);
 
 	float ScreenSize = 1.f;
 	for (auto LodIdx = 0; LodIdx < LOD_ARRAY_SIZE; LodIdx++) {
@@ -146,8 +147,21 @@ void ASandboxTerrainController::BeginPlay() {
 	ThreadPool = new TThreadPool(5);
 	Conveyor = new TConveyour();
 
-	GeneratorComponent = NewTerrainGenerator();
-	GeneratorComponent->RegisterComponent();
+	TArray<UTerrainGeneratorComponent*> GeneratorComponents;
+	GetComponents<UTerrainGeneratorComponent>(GeneratorComponents);
+	if (GeneratorComponents.Num() > 1) {
+		UE_LOG(LogVt, Warning, TEXT("More than one terrain generator detected! Skip others."), LodRatio);
+	}
+
+	for (UTerrainGeneratorComponent* Component : GeneratorComponents) {
+		GeneratorComponent = Component;
+	}
+
+	if (GeneratorComponent == nullptr) {
+		UE_LOG(LogVt, Warning, TEXT("Use default terrain genarator"), LodRatio);
+		GeneratorComponent = NewTerrainGenerator();
+		GeneratorComponent->RegisterComponent();
+	}
 
 	if (GetNetMode() == NM_DedicatedServer || GetNetMode() == NM_ListenServer) {
 		FTransform Transform = GetActorTransform();
@@ -235,11 +249,14 @@ void ASandboxTerrainController::EndPlay(const EEndPlayReason::Type EndPlayReason
 	delete Conveyor;
 }
 
+#define TRACE_CONVEYOR 0
+
 void ASandboxTerrainController::Tick(float DeltaTime) {
 	Super::Tick(DeltaTime);
 
 	LoadConsoleVars();
 
+	int R = 0;
 	double ConvTime = 0;
 	while (ConvTime < ConveyorMaxTime) {
 		std::function<void()> Function;
@@ -247,11 +264,25 @@ void ASandboxTerrainController::Tick(float DeltaTime) {
 			double Start = FPlatformTime::Seconds();
 			Function();
 			double End = FPlatformTime::Seconds();
+
+#if TRACE_CONVEYOR == 1 
+			UE_LOG(LogVt, Warning, TEXT("task = %f ms"), (End - Start) * 1000);
+#endif
+
 			ConvTime += (End - Start);
+			R++;
 		} else {
 			break;
 		}
 	}
+
+#if TRACE_CONVEYOR == 1 
+	if (R > 0) {
+		UE_LOG(LogVt, Warning, TEXT("ConvTime = %f ms"), ConvTime * 1000);
+		UE_LOG(LogVt, Warning, TEXT("R = %d"), R);
+	}
+#endif
+
 }
 
 //======================================================================================================================================================================
@@ -493,12 +524,18 @@ void ASandboxTerrainController::BeginPlayServer() {
 	}
 
 	if (LoadJson()) {
-		WorldSeed = MapInfo.WorldSeed;
+		if (MapInfo.WorldSeed.Len() > 2 && MapInfo.WorldSeed.Mid(0, 1) == TEXT("~")) {
+			FString S = MapInfo.WorldSeed.Mid(1, MapInfo.WorldSeed.Len() - 1);
+			WorldSeed = (int32)TSandboxData::DecodeBase36(S);
+			UE_LOG(LogVt, Log, TEXT("Load WorldSeed: %s = %d"), *MapInfo.WorldSeed, WorldSeed);
+		} else {
+			WorldSeed = FCString::Atoi(*MapInfo.WorldSeed);
+			UE_LOG(LogVt, Log, TEXT("Load WorldSeed: %d"), WorldSeed);
+		}
 	} else {
 		BeginNewWorld();
 	}
 
-	UE_LOG(LogVt, Warning, TEXT("WorldSeed: %d"), WorldSeed);
 	GeneratorComponent->ReInit();
 
 	LoadTerrainMetadata();
@@ -747,8 +784,8 @@ void ASandboxTerrainController::BatchSpawnZone(const TArray<TSpawnZoneParam>& Sp
 
 		if (VdInfoPtr->DataState == TVoxelDataState::UNDEFINED) {
 			TFileItmKey Key{ Index, TFileItmType::MESH_DATA };
-			if (TdFile.isExist(Key)) {
-				std::bitset<sizeof(ulong64)> ZoneFlags(TdFile.k_flags(Key));
+			if (FKvdb::HasKey(DataFileId, Key)) {
+				std::bitset<sizeof(uint64)> ZoneFlags(FKvdb::GetKeyFlags(DataFileId, Key));
 
 				bIsNoMesh = ZoneFlags.test((size_t)TZoneFlag::NoMesh);
 				bool bIsNoVd = ZoneFlags.test((size_t)TZoneFlag::NoVoxelData);
@@ -869,11 +906,17 @@ void ASandboxTerrainController::SpawnInitialZone() {
 	BatchSpawnZone(SpawnList);
 }
 
+#define TRACE_ADD_TERRAIN_ZONE 0
+
 // always in game thread
 UTerrainZoneComponent* ASandboxTerrainController::AddTerrainZone(FVector Pos) {
 	if (!IsInGameThread()) {
 		return nullptr;
 	}
+
+#if TRACE_ADD_TERRAIN_ZONE == 1 
+	double Start = FPlatformTime::Seconds();
+#endif
     
     TVoxelIndex Index = GetZoneIndex(Pos);
 	auto* Zone = GetZoneByVectorIndex(Index);
@@ -911,6 +954,12 @@ UTerrainZoneComponent* ASandboxTerrainController::AddTerrainZone(FVector Pos) {
 	if (bShowZoneBounds) {
 		DrawDebugBox(GetWorld(), Pos, FVector(USBT_ZONE_SIZE / 2), FColor(255, 0, 0, 100), true);
 	}
+
+#if TRACE_ADD_TERRAIN_ZONE == 1 
+	const double End = FPlatformTime::Seconds();
+	const double Time = (End - Start) * 1000;
+	UE_LOG(LogVt, Log, TEXT("AddTerrainZone --> %f %f %f --> %f ms"), Pos.X, Pos.Y, Pos.Z, Time);
+#endif
 
     return ZoneComponent;
 }
@@ -1008,16 +1057,12 @@ void ASandboxTerrainController::ExecGameThreadZoneApplyMesh(const TVoxelIndex& I
 				VdInfoPtr->SetNeedTerrainSave();
 				TerrainData->AddSaveIndex(Index);
 			}
-		} else {
-			// TODO remove
-			UE_LOG(LogVt, Log, TEXT("ASandboxTerrainController::ExecGameThreadZoneApplyMesh - game shutdown"));
 		}
 	};
 
 	AddTaskToConveyor(Function);
 }
 
-//TODO move to conveyor
 void ASandboxTerrainController::ExecGameThreadAddZoneAndApplyMesh(const TVoxelIndex& Index, TMeshDataPtr MeshDataPtr, const bool bIsNewGenerated, const bool bIsChanged) {
 	FVector ZonePos = GetZonePos(Index);
 	ASandboxTerrainController* Controller = this;
@@ -1046,13 +1091,9 @@ void ASandboxTerrainController::ExecGameThreadAddZoneAndApplyMesh(const TVoxelIn
 					}
 				}
 			}
-		} else {
-			// TODO remove
-			UE_LOG(LogVt, Warning, TEXT("ASandboxTerrainController::ExecGameThreadAddZoneAndApplyMesh - game shutdown"));
-		}
+		} 
 	};
 
-	//InvokeSafe(Function);
 	AddTaskToConveyor(Function);
 }
 

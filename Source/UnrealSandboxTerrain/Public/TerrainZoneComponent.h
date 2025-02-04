@@ -5,7 +5,6 @@
 #include "EngineMinimal.h"
 #include "VoxelMeshComponent.h"
 #include "Components/HierarchicalInstancedStaticMeshComponent.h"
-#include "kvdb.hpp"
 #include "TerrainZoneComponent.generated.h"
 
 
@@ -16,6 +15,9 @@ typedef TMap<uint64, TInstanceMeshArray> TInstanceMeshTypeMap;
 
 
 class UTerrainZoneComponent;
+
+typedef std::vector<uint8> TData;
+typedef std::shared_ptr<TData> TDataPtr;
 
 
 /**
@@ -74,9 +76,9 @@ public:
 
 	void SpawnInstancedMesh(const FTerrainInstancedMeshType& MeshType, const TInstanceMeshArray& InstMeshTransArray);
 
-    TValueDataPtr SerializeAndResetObjectData();
+    TDataPtr SerializeAndResetObjectData();
 
-	static TValueDataPtr SerializeInstancedMesh(const TInstanceMeshTypeMap& InstanceMeshMap);
+	static TDataPtr SerializeInstancedMesh(const TInstanceMeshTypeMap& InstanceMeshMap);
 
 private:
     

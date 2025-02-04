@@ -8,15 +8,14 @@
 #include "Core/memstat.h"
 
 
-TValueDataPtr SerializeMeshData(TMeshDataPtr MeshDataPtr);
+TDataPtr SerializeMeshData(TMeshDataPtr MeshDataPtr);
 
 UTerrainInstancedStaticMesh::UTerrainInstancedStaticMesh(const FObjectInitializer& ObjectInitializer) : Super(ObjectInitializer) {
-	//zone_counter++;
+
 }
 
 UTerrainZoneComponent::UTerrainZoneComponent(const FObjectInitializer& ObjectInitializer) : Super(ObjectInitializer) {
 	PrimaryComponentTick.bCanEverTick = false;
-	//zone_counter++;
 }
 
 void UTerrainZoneComponent::FinishDestroy() {
@@ -28,9 +27,15 @@ void UTerrainZoneComponent::DestroyComponent(bool bPromoteChildren) {
 	zone_counter--;
 }
 
+#define TRACE_APPLY_MESH 0
+
 void UTerrainZoneComponent::ApplyTerrainMesh(TMeshDataPtr MeshDataPtr, bool bIgnoreCollision) {
     const std::lock_guard<std::mutex> lock(TerrainMeshMutex);
-	double start = FPlatformTime::Seconds();
+
+#if TRACE_APPLY_MESH == 1 
+	double Start = FPlatformTime::Seconds();
+#endif
+
 	TMeshData* MeshData = MeshDataPtr.get();
 
 	if (MeshData == nullptr) {
@@ -68,18 +73,20 @@ void UTerrainZoneComponent::ApplyTerrainMesh(TMeshDataPtr MeshDataPtr, bool bIgn
 	MainTerrainMesh->bAffectDistanceFieldLighting = false;
 	MainTerrainMesh->SetCollisionProfileName(TEXT("BlockAll"));
 
-	double end = FPlatformTime::Seconds();
-	double time = (end - start) * 1000;
-	//UE_LOG(LogVt, Log, TEXT("ASandboxTerrainZone::applyTerrainMesh ---------> %f %f %f --> %f ms"), GetComponentLocation().X, GetComponentLocation().Y, GetComponentLocation().Z, time);
+
+#if TRACE_APPLY_MESH == 1 
+	double End = FPlatformTime::Seconds();
+	UE_LOG(LogVt, Log, TEXT("ApplyTerrainMesh --> %f %f %f --> %f ms"), GetComponentLocation().X, GetComponentLocation().Y, GetComponentLocation().Z, (End - Start) * 1000);
+#endif
 }
 
-TValueDataPtr UTerrainZoneComponent::SerializeAndResetObjectData(){
+TDataPtr UTerrainZoneComponent::SerializeAndResetObjectData(){
     const std::lock_guard<std::mutex> lock(InstancedMeshMutex);
-    TValueDataPtr Data = SerializeInstancedMeshes();
+    TDataPtr Data = SerializeInstancedMeshes();
     return Data;
 }
 
-TValueDataPtr UTerrainZoneComponent::SerializeInstancedMesh(const TInstanceMeshTypeMap& InstanceObjectMap) {
+TDataPtr UTerrainZoneComponent::SerializeInstancedMesh(const TInstanceMeshTypeMap& InstanceObjectMap) {
 	usbt::TFastUnsafeSerializer Serializer;
 	int32 MeshCount = InstanceObjectMap.Num();
 	Serializer << MeshCount;
@@ -207,7 +214,6 @@ void UTerrainZoneComponent::SpawnInstancedMesh(const FTerrainInstancedMeshType& 
 
 	bool bIsFoliage = GetTerrainController()->FoliageMap.Contains(MeshType.MeshTypeId);
 	if (InstancedStaticMeshComponent == nullptr) {
-		//UE_LOG(LogVt, Log, TEXT("SpawnInstancedMesh -> %d %d"), MeshType.MeshVariantId, MeshType.MeshTypeId);
 		FString InstancedStaticMeshCompName = FString::Printf(TEXT("InstancedStaticMesh - [%d, %d]-> [%.0f, %.0f, %.0f]"), MeshType.MeshTypeId, MeshType.MeshVariantId, GetComponentLocation().X, GetComponentLocation().Y, GetComponentLocation().Z);
 
 		InstancedStaticMeshComponent = NewObject<UTerrainInstancedStaticMesh>(this, FName(*InstancedStaticMeshCompName));
@@ -219,6 +225,8 @@ void UTerrainZoneComponent::SpawnInstancedMesh(const FTerrainInstancedMeshType& 
 
 		int32 StartCullDistance = MeshType.StartCullDistance;
 		int32 EndCullDistance = MeshType.EndCullDistance;
+
+		// ue4 issue
 		if (GetWorld()->WorldType == EWorldType::PIE || GetWorld()->WorldType == EWorldType::Editor) {
 			//StartCullDistance /= 10;
 			//EndCullDistance /= 10;
@@ -247,7 +255,6 @@ void UTerrainZoneComponent::SpawnInstancedMesh(const FTerrainInstancedMeshType& 
 	}
 
 	InstancedStaticMeshComponent->AddInstances(InstMeshTransArray.TransformArray, false);
-	//UE_LOG(LogVt, Warning, TEXT("AddInstances -> %d"), InstMeshTransArray.TransformArray.Num());
 }
 
 ASandboxTerrainController* UTerrainZoneComponent::GetTerrainController() {
